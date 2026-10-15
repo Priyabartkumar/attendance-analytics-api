@@ -18,6 +18,7 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+~$*
 
 # assignment materials: not redistributed publicly
 PROBLEM_STATEMENT.docx
