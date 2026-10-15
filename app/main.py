@@ -98,25 +98,29 @@ def ensure_indexes() -> None:
     for name, (coll, keys, opts) in INDEXES.items():
         try:
             db[coll].create_index(keys, name=name, **opts)
-        except PyMongoError as exc:
+            log.info("Index created or verified: %s",name)
+        except PyMongoError:
             # A unique index cannot be built when the seeded data already violates it,
             # and the name may be taken by an equivalent index. Either way the key
             # pattern must exist, because the queries below are hinted with it.
-            log.error("could not create index %s on %s: %s", name, coll, exc)
-            try:
-                db[coll].create_index(keys)
-            except PyMongoError as exc2:  # pragma: no cover - last resort
-                log.error("fallback index for %s also failed: %s", name, exc2)
+            log.exception("Failed to create required index %s on %s", name, coll,)
+            raise
+            
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
         ensure_indexes()
-    except Exception as exc:  # pragma: no cover - never block start-up on the database
-        log.error("index creation skipped: %s", exc)
-    yield
-    client.close()
+    except Exception:  # pragma: no cover - never block start-up on the database
+        log.exception("Application startup failed: required MongoDB indexes"
+                      "could not be created."
+        )
+        raise
+    try:
+        yield
+    finally:
+        client.close()
 
 
 app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0", lifespan=lifespan)
@@ -887,7 +891,7 @@ def punch_out(body: PunchOutIn):
     # The most recent punch-in at or before this instant - this is what makes an
     # overnight shift close correctly on the next calendar day.
     record = attendance_logs.find_one(
-        {"emp_code": body.emp_code, "punch_in": {"$lte": punched_at}},
+        {"emp_code": body.emp_code, "punch_in": {"$lte": punched_at}, "punch_out": None},
         sort=[("punch_in", DESCENDING)],
         hint=hint("emp_punch_in"),
     )
@@ -1065,7 +1069,7 @@ def employee_monthly(
         "total_late_minutes": int(row.get("total_late_minutes", 0) or 0),
         "total_overtime_minutes": int(row.get("total_overtime_minutes", 0) or 0),
         "attendance_pct": (
-            round_half_up(Decimal(str(present_days)) * 100 / Decimal(working_days), 2)
+            round_half_up(Decimal(str(present_days)) * 100 / Decimal(working_days), 4)
             if working_days
             else None
         ),
