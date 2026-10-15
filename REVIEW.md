@@ -1,8 +1,17 @@
 # REVIEW.md
 
-Defects found in the starter `app/main.py` (helpers and endpoints). Every "how you would notice it" below is a case I
-actually ran against MongoDB 8.0 with the sample documents from `DATA_MODEL.md`, the demo set in `tools/seed_demo.py`
-and the ~93,000-record set in `tools/seed_bulk.py`.
+Part A reviews `app/main.py` and documents 19 defects, the cases used to check their behavior, and the corresponding
+fixes.
+
+**Verification and scope**
+
+The corrected behavior is covered by `tests/test_contract.py` (132 checks) and additional runs against MongoDB 8.0
+using the demo and bulk datasets. The examples below describe the defects each fix is intended to prevent; they are not
+all observations from the original starter file.
+
+I could not recover the original starter from Git history or the available candidate-kit archive. The first available
+commit already contains a corrected implementation. I therefore cannot confirm that every listed defect appeared in the
+original file. Library-specific behavior and the corrected results were checked separately where noted in the findings.
 
 | # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
 |---|---|---|---|---|
@@ -21,7 +30,7 @@ and the ~93,000-record set in `tools/seed_bulk.py`.
 | 13 | `attendance_out()` | Read `doc["half_day"]` and `doc["history"]` directly, so a legacy record missing them raised `KeyError` → 500. | Sample document 9 has neither field. `GET /attendance` over seeded data 500s. Verified it now returns `half_day: false`, `history: []`. | `or`-defaults plus `int()` / `bool()` coercion for the numeric and boolean fields. |
 | 14 | `history_out()` | The dates nested inside `history[].changes.punch_in.{from,to}` were left as BSON datetimes. | They serialise as ISO strings while the contract says epoch milliseconds — easy to miss because the outer `at` looks right. Verified both are now `int`. | Walk `changes` and run `to_ms()` on the `punch_in` / `punch_out` entries only. |
 | 15 | `punch_in()` / `employee_out()` | The document handed to `insert_one` was returned directly. PyMongo **mutates** it, adding `_id`, and `ObjectId` is not JSON-serialisable. | Verified: a dict passed to `insert_one` comes back with keys `['a', '_id']`. The response either 500s or leaks `_id`, which the contract says never appears. | Serialisers whitelist contract fields only, and the insert is given a copy (`dict(doc)`) so the returned document stays clean. |
-| 16 | `EpochMillis` / request models | Instants typed as a plain `int`, which Pydantic happily coerces. | `1783312500.5`, `"1783312500000"` and the seconds-looking `1783312500` were all accepted; the contract requires 422. Verified all four rejected, including `True`. | `StrictInt` with `ge=100_000_000_000`, `le=4_102_444_800_000`. |
+| 16 | `EpochMillis` / request models | Instants typed as a plain `int`, which Pydantic happily coerces. | `"1783312500000"`, the seconds-looking `1783312500`, an integral float like `1783312500.0` and even `True` are all accepted by a plain `int`; the contract requires 422. (A *non-integral* float such as `1783312500.5` a plain `int` already rejects, for its own reason.) Verified that `StrictInt` plus the bounds rejects every one of them. | `StrictInt` with `ge=100_000_000_000`, `le=4_102_444_800_000`. |
 | 17 | `create_employee()` / `punch_in()` | Check-then-insert: a `find_one` for an existing row, then an insert. The gap between them is the race. | 16 parallel identical requests gave more than one 201 and could write two records for one employee-day. Both now give exactly one 201 and fifteen 409s. | Drop the pre-read, insert unconditionally, and map `DuplicateKeyError` to 409. The index decides the winner, not application code. |
 | 18 | `list_employees()` / `list_attendance()` | `total` did not reflect the filters, `page_size` was unbounded, and `page` was not floored at 1 (`page=0` makes the skip negative → `OperationFailure` 500). | `?department=Sales` reported the whole collection; `?page_size=100000` pulls everything into memory; `?page=0` 500s. Now: filtered totals, and 422 for `page=0` and `page_size=101`. | `page`/`page_size` bounded in the signature (`ge=1`, `le=100`), `count_documents` run with the **same** filter, and `skip`/`limit` pushed to MongoDB. |
 | 19 | `list_attendance()` | Sorted by `date` only — no tiebreaker, so pagination was unstable — and the date parameters were unvalidated. | Two records sharing a date can repeat or vanish across pages. `date_from=07/06/2026` and the impossible `2026-02-30` must be 422, as must `date_from > date_to`. All three verified. | Sort `(date desc, emp_code asc)`, which the `(date, emp_code)` index also supplies, plus `parse_date()` and an explicit range check. |
