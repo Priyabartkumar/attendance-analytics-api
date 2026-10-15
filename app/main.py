@@ -41,6 +41,12 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 # --------------------------------------------------------------------------- #
 load_dotenv()  # does not override real environment variables, which is what the contract asks for
 
+# Uvicorn's own logging config touches only the `uvicorn*` loggers and leaves the
+# root logger at WARNING with no handler, so without this the index messages below
+# are dropped and a successful start-up says nothing about what it verified. This is
+# a documented no-op when the host process has already configured logging.
+logging.basicConfig(level=logging.INFO)
+
 log = logging.getLogger("attendance")
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
