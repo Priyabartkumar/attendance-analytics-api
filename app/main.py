@@ -93,48 +93,64 @@ def hint(name: str) -> list[tuple[str, int]]:
     return INDEXES[name][1]
 
 
-def _has_key_pattern(coll: str, keys: list[tuple[str, int]]) -> bool:
-    """Whether `coll` already carries an index with exactly this key pattern, under
-    any name. Queries are hinted by pattern, so an existing equivalent index is
-    already sufficient - and creating a second one with the same pattern is worse
+def _existing_index(coll: str, keys: list[tuple[str, int]]) -> Optional[dict]:
+    """The spec of the index on `coll` with exactly this key pattern, under any
+    name, or None. Queries are hinted by pattern, so an existing equivalent index
+    already serves them - and creating a second one with the same pattern is worse
     than doing nothing, because the hint then matches two indexes and the query
     fails with IndexNotFound."""
     try:
-        return any(
-            [(f, int(d)) for f, d in spec["key"].items()] == keys
-            for spec in db[coll].list_indexes()
-        )
+        for spec in db[coll].list_indexes():
+            if [(f, int(d)) for f, d in spec["key"].items()] == keys:
+                return spec
     except PyMongoError as exc:  # pragma: no cover - cannot inspect, let the create decide
         log.warning("could not list indexes on %s: %s", coll, exc)
-        return False
+    return None
 
 
 def ensure_indexes() -> None:
     """Create every index this app relies on. Safe to call repeatedly, including
     against a database that already holds the data and its own index names.
-    Raises if a required key pattern cannot be ensured at all, because the queries
-    are hinted with it and cannot run without it."""
+
+    Raises rather than returning whenever a required key pattern is missing or a
+    required uniqueness guarantee cannot be established. The write paths settle
+    their races on those unique indexes, so the app must never report a
+    successful start-up while one of them is absent."""
     for name, (coll, keys, opts) in INDEXES.items():
-        if _has_key_pattern(coll, keys):
-            log.info("key pattern for %s already present on %s", name, coll)
+        needs_unique = bool(opts.get("unique"))
+        existing = _existing_index(coll, keys)
+        if existing is not None:
+            # The pattern is already served, so the hinted queries work. A unique
+            # one must actually be unique though: dropping the existing index to
+            # rebuild it would mean mutating a database we did not create, so
+            # report the mismatch instead of pretending the guarantee is there.
+            if needs_unique and not existing.get("unique", False):
+                log.error(
+                    "index %r on %s provides the key pattern for %s but is not unique",
+                    existing.get("name"),
+                    coll,
+                    name,
+                )
+                raise RuntimeError(
+                    f"{coll}.{existing.get('name')} provides the key pattern for "
+                    f"{name} without its unique constraint"
+                )
+            log.info(
+                "key pattern for %s already present on %s as %r",
+                name,
+                coll,
+                existing.get("name"),
+            )
             continue
         try:
             db[coll].create_index(keys, name=name, **opts)
             log.info("index created: %s on %s", name, coll)
-        except PyMongoError as exc:
-            # The usual cause is a unique index over data that already violates it.
-            # The key pattern still has to exist, because every query is hinted with
-            # it, so fall back to the same name without the constraint rather than
-            # adding a second index with the same pattern.
-            log.warning("could not create %s on %s as specified: %s", name, coll, exc)
-            if not opts.get("unique"):
-                raise
-            try:
-                db[coll].create_index(keys, name=name)
-                log.warning("created %s on %s WITHOUT its unique constraint", name, coll)
-            except PyMongoError as exc2:
-                log.exception("cannot ensure the key pattern for %s on %s", name, coll)
-                raise
+        except PyMongoError:
+            # No fallback: a unique index that cannot be built over the existing
+            # data means the constraint the write paths rely on does not hold, and
+            # serving without it would corrupt data rather than merely slow it down.
+            log.exception("cannot create the required index %s on %s", name, coll)
+            raise
 
 
 @asynccontextmanager
