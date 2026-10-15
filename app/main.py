@@ -93,29 +93,56 @@ def hint(name: str) -> list[tuple[str, int]]:
     return INDEXES[name][1]
 
 
+def _has_key_pattern(coll: str, keys: list[tuple[str, int]]) -> bool:
+    """Whether `coll` already carries an index with exactly this key pattern, under
+    any name. Queries are hinted by pattern, so an existing equivalent index is
+    already sufficient - and creating a second one with the same pattern is worse
+    than doing nothing, because the hint then matches two indexes and the query
+    fails with IndexNotFound."""
+    try:
+        return any(
+            [(f, int(d)) for f, d in spec["key"].items()] == keys
+            for spec in db[coll].list_indexes()
+        )
+    except PyMongoError as exc:  # pragma: no cover - cannot inspect, let the create decide
+        log.warning("could not list indexes on %s: %s", coll, exc)
+        return False
+
+
 def ensure_indexes() -> None:
-    """Create every index this app relies on. Safe to call repeatedly."""
+    """Create every index this app relies on. Safe to call repeatedly, including
+    against a database that already holds the data and its own index names."""
     for name, (coll, keys, opts) in INDEXES.items():
+        if _has_key_pattern(coll, keys):
+            log.info("key pattern for %s already present on %s", name, coll)
+            continue
         try:
             db[coll].create_index(keys, name=name, **opts)
-            log.info("Index created or verified: %s",name)
-        except PyMongoError:
-            # A unique index cannot be built when the seeded data already violates it,
-            # and the name may be taken by an equivalent index. Either way the key
-            # pattern must exist, because the queries below are hinted with it.
-            log.exception("Failed to create required index %s on %s", name, coll,)
-            raise
-            
+            log.info("index created: %s on %s", name, coll)
+        except PyMongoError as exc:
+            # The usual cause is a unique index over data that already violates it.
+            # The key pattern still has to exist, because every query is hinted with
+            # it, so fall back to the same name without the constraint rather than
+            # adding a second index with the same pattern.
+            log.warning("could not create %s on %s as specified: %s", name, coll, exc)
+            if not opts.get("unique"):
+                raise
+            try:
+                db[coll].create_index(keys, name=name)
+                log.warning("created %s on %s WITHOUT its unique constraint", name, coll)
+            except PyMongoError as exc2:
+                log.error("cannot ensure the key pattern for %s on %s: %s", name, coll, exc2)
+                raise
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
         ensure_indexes()
-    except Exception:  # pragma: no cover - never block start-up on the database
-        log.exception("Application startup failed: required MongoDB indexes"
-                      "could not be created."
-        )
+    except Exception:
+        # The queries cannot run without these key patterns, so serving would only
+        # produce wrong answers more slowly. Fail loudly instead.
+        log.exception("startup aborted: the required MongoDB key patterns could not be ensured")
         raise
     try:
         yield
