@@ -44,6 +44,23 @@ logs at all, a department whose only member has not joined yet, an overnight shi
 open record, `ABSENT`/`LEAVE`, a legacy record with no `half_day`/`history`, a log belonging to an employee who does not
 exist, and a three-way split on late minutes that produces a tie at a rank cutoff.
 
+## Tests
+
+`tests/test_contract.py` checks the contract and the business rules against a running instance - expected values, not
+just status codes. Standard library only, so `requirements.txt` is all you need. It exits non-zero on the first
+failure, so it can run in CI.
+
+```bash
+python tools/seed_demo.py                 # sections B-E assert against this dataset
+uvicorn app.main:app --port 8000          # in another shell
+python tests/test_contract.py             # 129 checks
+```
+
+Point it elsewhere with `BASE_URL=http://127.0.0.1:9000 python tests/test_contract.py`. Sections F-I provision their
+own `EMP7xxx`/`EMP8xxx` employees and do not need the demo data: they cover the R1-R5 boundaries from the examples in
+the rules, every documented status code, the five explain plans, and the punch-in / punch-out / regularize races under
+16 parallel requests.
+
 ## Notes
 
 * **Analytics read the stored derived values** (`work_hours`, `late_minutes`, `overtime_minutes`, `half_day`) and never

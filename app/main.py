@@ -942,7 +942,7 @@ def punch_out(body: PunchOutIn):
     # The most recent punch-in at or before this instant - this is what makes an
     # overnight shift close correctly on the next calendar day.
     record = attendance_logs.find_one(
-        {"emp_code": body.emp_code, "punch_in": {"$lte": punched_at}, "punch_out": None},
+        {"emp_code": body.emp_code, "punch_in": {"$lte": punched_at}},
         sort=[("punch_in", DESCENDING)],
         hint=hint("emp_punch_in"),
     )
@@ -1120,7 +1120,7 @@ def employee_monthly(
         "total_late_minutes": int(row.get("total_late_minutes", 0) or 0),
         "total_overtime_minutes": int(row.get("total_overtime_minutes", 0) or 0),
         "attendance_pct": (
-            round_half_up(Decimal(str(present_days)) * 100 / Decimal(working_days), 4)
+            round_half_up(Decimal(str(present_days)) * 100 / Decimal(working_days), 2)
             if working_days
             else None
         ),
