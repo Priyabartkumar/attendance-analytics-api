@@ -111,7 +111,9 @@ def _has_key_pattern(coll: str, keys: list[tuple[str, int]]) -> bool:
 
 def ensure_indexes() -> None:
     """Create every index this app relies on. Safe to call repeatedly, including
-    against a database that already holds the data and its own index names."""
+    against a database that already holds the data and its own index names.
+    Raises if a required key pattern cannot be ensured at all, because the queries
+    are hinted with it and cannot run without it."""
     for name, (coll, keys, opts) in INDEXES.items():
         if _has_key_pattern(coll, keys):
             log.info("key pattern for %s already present on %s", name, coll)
@@ -131,7 +133,7 @@ def ensure_indexes() -> None:
                 db[coll].create_index(keys, name=name)
                 log.warning("created %s on %s WITHOUT its unique constraint", name, coll)
             except PyMongoError as exc2:
-                log.error("cannot ensure the key pattern for %s on %s: %s", name, coll, exc2)
+                log.exception("cannot ensure the key pattern for %s on %s", name, coll)
                 raise
 
 
